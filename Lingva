@@ -1,0 +1,600 @@
+#!/usr/bin/env python
+import sys, os, time
+#from subprocess import Popen, list2cmdline
+import subprocess
+import re
+import argparse
+import insertInv
+import tempfile
+
+#store the invariants and the positions where to insert them 
+class results:
+    codeLocation = None
+    invariants = None
+    def __init__(self, location, invariants):
+        self.codeLocation = location
+        self.invariants = invariants
+    #display the structure
+    def display(self):
+        print(self.codeLocation)
+#        for x in self.invariants:
+#            print x
+    #get the line before which we have to insert the invariant 
+    def getLocation(self):
+        return int(self.codeLocation)
+    #return the invariants generated 
+    def getInvariants(self):
+        return self.invariants
+    
+#keep the structure of the program 
+class SourceOrganization:
+    id = 0
+    functionName = None
+    functionNumber = None
+    whileLocations = []
+    def __init__(self, functionName , functionNumber):
+        self.id = id
+        #the actual name from the C/C++ file
+        self.functionName = functionName
+        #the number of the function as it appears in the file
+        self.functionNumber = functionNumber
+        #location of the while in the function -- it might contain more than one while
+        self.whileLocations = []
+    
+    def setWhileLocation(self, w):
+        self.whileLocations.append(w)
+    
+    #return the list of while locations from a function
+    def getWhileLocations(self):
+        return self.whileLocations
+    #return the number of a function
+    def getFunctionNumber(self):
+        return self.functionNumber
+    def getFunctionName(self):
+        return self.functionName
+    #display how the structure is stored
+    def display(self):
+        print(self.functionName, self.functionNumber)
+        print self.whileLocations
+
+#structure that keeps the function number and while number to analyze and where to insert the invarinat in the output file  
+class CommandArguments:
+    functionNumber=None
+    whileToAnalyze=None
+    functionName = None 
+    def __init__(self,functionNO,  whileToAnalyze, FuncName):
+        self.functionNumber = functionNO
+        self.wno = whileToAnalyze
+        self.functionName = FuncName
+        self.whileLocation = getWhileLocation(whileToAnalyze,FuncName)
+    def getFuncNo(self):
+        return self.functionNumber
+    def getWhileNo(self):
+        return self.wno
+    def display(self):
+        print (self.functionName,self.functionNumber,self.wno, self.whileLocation)
+    
+#get the position of the whileToAnalyze from function functionName
+#searches in the sourceOrganization list and returns the position
+def getWhileLocation(whileToAnalyze, FuncName):
+    for x in sourceOrg:
+        if x.functionName == FuncName:
+            whiles = x.whileLocations
+            if int(whileToAnalyze) <= len(whiles):
+                return whiles[int(whileToAnalyze)-1]
+
+
+#keeps the original structure of the program      
+sourceOrg = []   
+#keeps the commands to be executed -- in fact just the whileNo-FuncNO-position in code 
+commands = []
+
+def getFunction(functionName, sourceOrg):
+    for x in sourceOrg: 
+        if functionName == x.getFunctionName():
+            return x
+    return 0
+
+def exists(commands, obj):
+    for x in commands: 
+        if int(x.getFuncNo()) == int(obj.getFuncNo()):
+            if int(x.getWhileNo()) == int(obj.getWhileNo()):
+                return 1;
+    return 0
+
+def length(arg):
+    return arg.__len__()
+
+def treatFunction(sorceOrgObj, Whiles):
+    '''
+    aici primim ca si argument un obiect de tipul sourceObject si comanda pentru whiles.
+    Intuitiv ar trebui sa facem distinctia intre whiles -- daca este * sau daca este un simplu 
+    numar. 
+    '''
+    name = sorceOrgObj.getFunctionName()
+    number = sorceOrgObj.getFunctionNumber()
+    
+    if "*" in Whiles: 
+        '''
+        do it for all the whiles
+        '''
+        for loc in range(len(sorceOrgObj.whileLocations)):
+            com = CommandArguments(number,loc+1, name)
+            if exists(commands, com) == 0:
+                    commands.append(com)
+        
+    elif int(Whiles) <= len(sorceOrgObj.whileLocations) :
+        ''' este verificat ca numarul while-ului sa fie inclus in functie'''
+        com = CommandArguments(number, Whiles, name)
+        if exists(commands, com) == 0:
+                    commands.append(com)
+    else :
+        print "some not random error appeared! So good bye!"
+        sys.exit(-1)
+    
+        
+def fixRE(function):
+    begin = 0
+    new = ""
+
+    '''
+    Create the actual regular expression. If there are "*" in the re then add the '.' in front of the 
+    '*'. This is needed in order to be able to compile it with re.
+    '''
+    for i in range(1, length(function) - 1):
+        if function[i] == '*': 
+            new = new + function[begin:i] + '.'
+            begin = i
+    new = new + function[begin:length(function)]
+    function = new
+
+    '''
+    If the first position is a '*' than add a '.' in front of it. Otherwise (not *) then add a ^ so that 
+    we ensure the matched words start with that structure 
+    '''
+    if function[0] == '*':
+        function = "." + function
+    else: 
+        function = '^' + function 
+    '''
+    similar to the previous job, but this time we test for the last position.
+    '''
+    if function[length(function) - 1] == '*':
+        function = function[0:length(function) - 1] + '.*'
+    else: 
+        function = function + '$'
+
+    return function
+
+
+
+def createCommandsFromArgs(args, sourceOrg):
+    listOfCommands = args.funcNO
+    for i in listOfCommands:
+        #we  have the assumption that only --fno --fno is used
+        try: 
+            (functionName, whileNumber) = i[0].split(".")
+        except ValueError, e : 
+            print "You might have some error in the function specification,check the -f commands!";
+            sys.exit(-1)
+
+        #print "FUNCTION NAME : ", functionName
+        if "*" in functionName and "*" != functionName:
+            functionName = fixRE(functionName)
+            position = functionName.find("*")
+            if position == 0 or position == (length(functionName)-1):
+                #print " The star is in the correct position!!!"
+                if position == 0 : 
+                    functionName = "."+functionName
+            comp = re.compile(functionName)
+                    
+            for x in sourceOrg: 
+                fn = x.functionName
+                result = comp.match(fn)
+                if result != None: 
+                    treatFunction(x, whileNumber)
+                    #print result.group(), x.functionName
+         
+            '''
+            what we have to do now is to get the list of all matching function names and 
+            create the commandArguments for each of them
+            '''          
+            #sys.exit(0)
+           
+            
+        elif functionName != "*" and whileNumber != "*":
+            func = getFunction(functionName, sourceOrg)
+            if func == 0:
+                print "there is no such function (",functionName,") in the file"
+                continue
+            whiles = func.getWhileLocations()
+            if int(whileNumber)<= len(whiles):
+                comand = (CommandArguments(func.getFunctionNumber(), whileNumber, func.getFunctionName()))
+                if exists(commands, comand) == 0:
+                    commands.append(comand)
+            else : 
+                print "There is no while number ", whileNumber, " in function ", functionName 
+                print "Continuing with the rest of the arguments!"
+            
+        
+        elif functionName != "*" and whileNumber.strip() == "*":
+            func = getFunction(functionName, sourceOrg)
+
+            if func == 0:
+                print "there is no such function (",functionName,") in the file"
+                continue
+            whiles = func.getWhileLocations()
+            number = func.getFunctionNumber()
+            
+            name = func.getFunctionName()
+            #print name 
+            #print whiles, len(whiles)
+            for no in range(len(whiles)):
+                comand = CommandArguments(number, no+1, name)
+                if exists(commands, comand) == 0:
+                    commands.append(comand)
+                    #print comand.display()
+
+        elif functionName == "*" and whileNumber.strip() != "*":
+            for fno in range(len(sourceOrg)):
+                if int(whileNumber) <= len(sourceOrg[fno].whileLocations):
+                    comand = CommandArguments(fno+1, whileNumber, sourceOrg[fno].getFunctionName())
+                    if exists(commands, comand) == 0:
+                        commands.append(comand)
+                else : 
+                    print "There is no while number ", whileNumber, " in function ", sourceOrg[fno].functionName 
+                    print "Continuing with the rest of the arguments!"
+          
+        elif functionName == "*" and whileNumber.strip() == "*":
+            for fno in range(len(sourceOrg)):
+                for wno in range(len(sourceOrg[fno].whileLocations)):
+                    comand = CommandArguments(fno+1, wno+1, sourceOrg[fno].getFunctionName())
+                    if exists(commands, comand) == 0:
+                        commands.append(comand)
+        else:
+            print "This shouldn't happen! Exiting... "
+            sys.exit(-10)
+        
+    commands.sort(key=lambda x: x.functionNumber, reverse=False)
+    return commands
+    
+def cpu_count():
+    if sys.platform =="win32": 
+        try:
+            num = int(os.environ['NUMBER_OF_PROCESORS'])
+        except(ValueError, KeyError):
+            pass
+    elif sys.platform == 'darwin':
+        try: 
+            num = int(os.popen('sysctl -n hw.ncpu').read())
+        except ValueError:
+            pass
+    else: 
+        try: 
+            num = os.sysconf('SC_NPROCESSORS_ONLN')
+        except (ValueError, OSError, AttributeError):
+            pass
+    return num
+
+#insert here work for parallel
+#def worker(q):
+#    item = q.get()
+#    os.system(item)
+#    q.task_done()
+
+#def execute_parallel(cmds):
+#    no_cpu = cpu_count()
+    
+
+def execute_commands(cmds):
+    # execute the commands in parallel (multiple processes), 
+    # on as many CPU's we have
+
+    if not cmds: return #the list of commands is empty
+    def done(p):
+        return p.poll() is not None
+    def success(p):
+        return p.returncode == 0
+    def fail():
+        sys.exit(1)
+
+    max_tasks = cpu_count()
+    processes = []
+    while True:
+        while cmds and len(processes)< max_tasks: 
+            task = cmds.pop()
+            #print list2cmdline(task)
+            #processes.append(os.system(task))
+            processes.append(subprocess.Popen(task, shell=True))
+        for p in processes: 
+            if done(p): 
+                if success(p):
+                    processes.remove(p)
+                else:
+                    fail()
+        if not processes and not cmds: 
+            break
+        else: 
+            time.sleep(0.05)
+
+#parse the command line arguments and create an object containing all the information passed as command line
+outputOnTerminal = False
+def createCommands(args):
+    global outputOnTerminal
+    parser = argparse.ArgumentParser(description = "Annotate C code with invariants")
+    #parser.add_argument('analyzer', metavar = 'VAMPIRE',
+    #                    help= "Vampire executable ")
+    #parser.add_argument('vampire', metavar = 'VAMPIRE', 
+    #                    help = "vampire executable" )
+    parser.add_argument('input',metavar = 'INPUT-FILENAME',
+                        help="input file to be processed. ")
+    parser.add_argument("-o","--output",action="store",
+                      dest="outputFile", default=None,
+                      help="output filename -- by default if no output is specified, the output will be printed in a file $(INPUT-FILENAME).annotated and also on the screen.")
+    
+    parser.add_argument("-v","--verbose", action="store_true",dest="verbose")
+    
+    parser.add_argument("-t","--time_limit",action="store", type=int, 
+                        dest="timeLimit",
+                        help="time limit for invariant generation , default value 10 seconds")
+   
+    parser.add_argument("-f","--fun", action="append",nargs="*",
+                        dest="funcNO",
+                        help="Name of the function to process and the while/whiles to process. We support the * operator, with the constraint that if * is the first part of the argument it must be escaped ( \* ). In case there is no while specified after . then we consider the default option * - all the whiles in the function. \*.* represents the default value for this option")
+    
+    parser.add_argument("--format", action="store", dest="format", default="framac", help="format of the invariants. Values can be either tptp or framac. Default value framac")
+    
+    '''parser.add_argument("-p","--parallel",action="store",
+                      dest="parallel",
+                      help="parallel execution, default value false -- under test now")
+    '''
+    parser.add_argument("--tVamp",action="store",type=int, default=16,
+                      dest="tVamp",
+                      help="Time limit for the minimization of the set of invariants. Default 20 seconds. 0 seconds - no minimization is done!")
+    
+    parser.add_argument("--completeOutput", action="store_true",dest="completeOutput",help="flag that tells the tool to output also complete output for each of the whiles analysed. This can be used in combination with the --folderFEC option")
+    parser.add_argument("--folderFEC", action="store",type=str, dest="FolderName", default=None,help="folder where to save individual files that come from complete output. If left empty, than no files will be saved.")
+    arg = parser.parse_args(args)
+    
+    if arg.timeLimit == None: 
+        arg.timeLimit = 10
+ 
+    if arg.funcNO == None or arg.funcNO == "*":
+        arg.funcNO = []
+        arg.funcNO.append(["*.*"])
+    if arg.input == None:
+        print "You must provide input file! "
+        parser.print_help()
+        sys.exit(1)
+    if arg.outputFile == None:
+        arg.outputFile = arg.input+".annotated"
+        outputOnTerminal = True
+
+    arg.analyzer = "./core"
+    '''
+    if arg.analyzer == None:
+        print "You must provide lingva executable!"
+        parser.print_help()
+        sys.exit(1)
+    '''
+    if not(arg.format == None or arg.format == "tptp" or arg.format =="framac") :
+        print "The format specified is not supported ! "
+        print "Quitting the program!"
+        exit();
+        
+    #if arg.vampire == None: 
+    #    print "you must provide the path to vampire!"
+    #   parser.print_help()
+    #    sys.exit(1)
+    arg.vampire = arg.analyzer
+    if arg.tVamp == None:
+        arg.tVamp = 20
+    #if arg.outputFile == None and arg.format != None: 
+    #    arg.outputFile = "output.txt"
+    #arg.tVamp = float(arg.tVamp / 4 )
+    return arg
+
+from os import path
+
+def getSourceOrganization(parsedCmd):
+    if not path.exists(parsedCmd.analyzer) :
+        print "There is no such file ", parsedCmd.analyzer
+        sys.exit(1)
+    if not path.exists(parsedCmd.input) or not path.isfile(parsedCmd.input):
+        print "The input does not exist, or is not a file", parsedCmd.input
+        sys.exit(1)
+    #in case of analyzing all the functions from the file, get the number of functions
+    p = subprocess.Popen((parsedCmd.analyzer+" --mode program_analysis --function_number -1 --while_number -1 "+parsedCmd.input).split(), stdout = subprocess.PIPE, stderr=subprocess.PIPE)
+    outp,err = p.communicate()
+    if err != "":
+        print err
+        sys.exit(-1)
+    else:
+        ff = outp.split("\n")
+    if parsedCmd.verbose == True:
+        for x in ff: 
+            if "WHILE LOCATION" in x: 
+                t = x.split(":")
+                print "While location in code: line ", t[1].strip()
+            else:
+                print x
+        
+    sourceOrg= []
+    funcNo = 0
+    for x in ff :           
+        if "WHILE LOCATION:" in x:
+            spl = x.split(":")
+            num = funcNo-1
+            sourceOrg[num].whileLocations.append(spl[1].strip())
+        elif "Function Name :" in x:
+            spl = x.split(":")
+            funcNo = funcNo+1;
+            sourceOrg.append(SourceOrganization(spl[1].strip(),funcNo))
+    
+    return sourceOrg
+   
+
+#invariants is of type results, containing the code position where to place the invariant 
+#and also the actural invariants to annotate the code with 
+def writeOutputFile(filename, invariants):
+    fout = open(filename,"w")
+    cin = open(parsedArg.input,"r")
+    cCode = cin.readlines()
+    cin.close()
+    #beign form position 0 in the input file 
+    start = 0
+    #for each result -- set of invatiants to annotate
+    for x in invariants:
+        #copy the C code up to the while position into the output file
+        for i in range(start, int(x.getLocation())-1):
+            fout.write(cCode[i])
+        #write the invariants in the correct position
+        fout.writelines(x.getInvariants())
+
+        #set the start position for the next result as being the position of the last while
+        start = int(x.getLocation())-1 
+    #copy the rest of the file into the output
+    
+    for i in range(start, len(cCode)):
+        fout.write(cCode[i])
+    fout.close()
+    return 1
+
+
+#create the actual commands and run them 
+#gets as parameters whileNO, functionNO and the temporary file name
+def createCom(wno, fno, tempFileName):
+    commandLine=""
+    grep = ""
+    if parsedArg.completeOutput == True: 
+        grep = ""
+    elif parsedArg.FolderName != None: 
+        grep = " | grep \"tff(\" "
+    else: 
+        grep = " | grep \"tff(inv\" "
+
+    try:
+        if parsedArg.tVamp == 0:
+            if parsedArg.verbose == True:
+                print "not trying SEI"
+
+            commandLine = parsedArg.analyzer +" --mode program_analysis --time_limit " +str(parsedArg.timeLimit)+ " --while_number " + str(wno) + " --function_number "+ str(fno) + " " + parsedArg.input
+            if parsedArg.verbose == True: 
+                print commandLine
+
+            if parsedArg.format == "framac":
+                commandLine = commandLine  + " | grep \"tff(inv\" | " + \
+        "sed -e \"s/tff(inv[^,]*,//g\" | sed -e \"s/claim/loop invariant/g\" | sed -e \"s/\$sum/+/g\" | sed -e \"s/\$product/\*/g\""
+                commandLine = commandLine +" |sed -e \"s/\$uminus/#/g\" | sed -e \"s/-/#/g\" | sed -e \"s/\$lesseq/@/g\" | sed -e \"s/\$greatereq/%/g\""
+                commandLine = commandLine + "| sed -e \"s/\$less/</g\" | sed -e \"s/\$greater/>/g\""
+            #final step put it in the temporary OutputFile
+            else :
+                #commandLine = commandLine + " | grep \"tff(\" "
+                commandLine = commandLine + grep
+            #modify it accordingly 
+            commandLine = commandLine +  ">"+tempFileName
+            #print commandLine
+            #print commandLine
+            os.system(commandLine)
+            if parsedArg.verbose == True and parsedArg.format == "tptp": 
+                os.system("cat "+tempFileName)
+        else:
+            if parsedArg.verbose == True:
+                print "we do SEI"
+            #create temporary file 
+            intermT = tempfile.NamedTemporaryFile()
+            commandLine = parsedArg.analyzer +" --mode program_analysis --time_limit " +str(parsedArg.timeLimit)+ " --while_number " + str(wno) + " --function_number "+ str(fno)
+            commandLine = commandLine + " " + parsedArg.input +" | grep tff >"+ intermT.name
+           
+            os.system(commandLine)
+     
+            intermS = tempfile.NamedTemporaryFile()
+            strategies = "./symels \""+parsedArg.vampire+" --input_syntax tptp \" "+intermT.name+" "+intermS.name+" "+str(parsedArg.tVamp) 
+            #launch vampire with different strategies
+            if parsedArg.verbose == True: 
+                os.system(strategies)
+            else:
+                os.system(strategies+" >/dev/null")
+
+            if parsedArg.format == "tptp" or parsedArg.format == None:
+                commandLine = "cat "+intermS.name+grep+" > "+tempFileName
+            else :
+                commandLine = ""
+                commandLine = "cat "+intermS.name+ " | grep \"tff(inv\" | " + \
+            "sed -e \"s/tff(inv[^,]*,//g\" | sed -e \"s/claim/loop invariant/g\" | sed -e \"s/\$sum/+/g\" " 
+                commandLine = commandLine +" |sed -e \"s/\$uminus/#/g\" | sed -e \"s/-/#/g\" | sed -e \"s/\$lesseq/@/g\" | sed -e \"s/\$greatereq/%/g\""
+                commandLine = commandLine + "| sed -e \"s/\$less/</g\" | sed -e \"s/\$greater/>/g\""
+                #final step put it in the temporary OutputFile
+                #modify it accordingly 
+                commandLine = commandLine +  ">"+tempFileName
+            os.system(commandLine)
+            #close all temporary files created - this action also takes care of deleting them 
+            intermT.close()
+            intermS.close()
+            #if parsedArg.verbose == True and parsedArg.format == "tptp": 
+            if outputOnTerminal == True and parsedArg.verbose == False:
+                print "should arrive here"
+                os.system("cat "+tempFileName)
+    except Exception,e:
+        print "exception:",e
+        sys.exit(1)
+    return commandLine 
+
+def annotateTheCode():
+    commands = createCommandsFromArgs(parsedArg, sourceOrg)
+    res = []
+    offset = 0
+    genInvName = ""
+    if(parsedArg.FolderName!=None):
+        genInvName = parsedArg.FolderName.strip("/")+"/"
+
+    for x in commands: 
+        tempFile = tempfile.NamedTemporaryFile()
+        if parsedArg.verbose == True:
+            print "Analysing from function "+x.functionName+" while number "+str(x.wno)
+        createCom(x.wno, x.functionNumber,tempFile.name)
+        inv = tempFile.readlines()
+        invS = ""
+        if (parsedArg.format == "tptp" or parsedArg.format == None) :
+            invS = inv
+        else:
+            invS = insertInv.work(inv)
+            print "Translated to right format"
+            if parsedArg.verbose == True : 
+                for i in invS : 
+                    print i
+        #print (x.functionNumber, x.whileLocation, x.wno)
+        res.append(results(x.whileLocation, invS))
+        
+        offset = offset + len(inv)
+        invS = []
+        #res.sort(key=lambda x: x.codeLocation, reverse=False)
+        if(parsedArg.completeOutput==True or parsedArg.FolderName!=None):
+            tempOut = genInvName+str(x.functionName)+"."+str(x.wno)
+            c = "cat "+tempFile.name+" | sed -e \"s/claim/hypothesis/g\" > "+tempOut
+            os.system(c)
+        
+        tempFile.close()
+
+    # print invariants on terminal? 
+    if outputOnTerminal == True and parsedArg.tVamp == 0: 
+        print "we are here"
+        for i in res : 
+            inv = i.getInvariants()
+            for x in inv: 
+                print x.strip("\n") 
+
+    if (parsedArg.outputFile == None and parsedArg.completeOutput==False and parsedArg.FolderName==None) :
+        for xx in res:
+            invariants = xx.getInvariants()
+            for inv in invariants: 
+                print inv.strip("\n")
+    
+    if(parsedArg.outputFile != None):
+        writeOutputFile(parsedArg.outputFile,res)
+    
+            
+if __name__ == '__main__':
+    parsedArg = createCommands(sys.argv[1:])
+    sourceOrg = getSourceOrganization(parsedArg)
+    annotateTheCode()
